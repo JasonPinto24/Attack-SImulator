@@ -1,90 +1,104 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
 import pandas as pd
 import numpy as np
+
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.ensemble import IsolationForest
+from sklearn.mixture import GaussianMixture
 
-# -------- 1. Sample Data --------
-data = pd.DataFrame({
-    "login_count": [5, 6, 7, 5, 100, 6, 7, 120],
-    "file_access": [20, 22, 19, 21, 500, 20, 23, 600]
-})
+import shap
 
-X = data.values.astype(np.float32)
+# =========================
+# STEP 1: LOAD DATA
+# =========================
+df = pd.read_csv("output/features.csv")
 
-# -------- 2. Isolation Forest --------
-iso = IsolationForest(contamination=0.2)
-iso.fit(X)
-data["iso_score"] = -iso.decision_function(X)  # higher = more abnormal
+# Features used for model
+feature_cols = ["email_count", "active_days", "psych_risk_score"]
+X = df[feature_cols]
 
-# -------- 3. VAE Model --------
-class VAE(nn.Module):
-    def __init__(self, input_dim, latent_dim=2):
-        super(VAE, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 8)
-        self.fc21 = nn.Linear(8, latent_dim)
-        self.fc22 = nn.Linear(8, latent_dim)
-        self.fc3 = nn.Linear(latent_dim, 8)
-        self.fc4 = nn.Linear(8, input_dim)
+# =========================
+# STEP 2: NORMALIZE
+# =========================
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
-    def encode(self, x):
-        h = torch.relu(self.fc1(x))
-        return self.fc21(h), self.fc22(h)
+# =========================
+# STEP 3: ISOLATION FOREST (CURRENT INSIDER)
+# =========================
+iso = IsolationForest(contamination=0.1, random_state=42)
+df["anomaly_label"] = iso.fit_predict(X_scaled)
 
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
+df["is_insider"] = (df["anomaly_label"] == -1).astype(int)
 
-    def decode(self, z):
-        h = torch.relu(self.fc3(z))
-        return self.fc4(h)
+# =========================
+# STEP 4: GMM (FUTURE RISK)
+# =========================
+gmm = GaussianMixture(n_components=2, random_state=42)
+gmm.fit(X_scaled)
 
-    def forward(self, x):
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
+log_probs = gmm.score_samples(X_scaled)
 
-# -------- 4. Train VAE --------
-model = VAE(input_dim=2)
-optimizer = optim.Adam(model.parameters(), lr=0.01)
+# Convert to positive risk score
+risk_values = -log_probs.reshape(-1, 1)
 
-def loss_function(recon_x, x, mu, logvar):
-    recon_loss = nn.functional.mse_loss(recon_x, x)
-    kld = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    return recon_loss + kld
+risk_scaler = MinMaxScaler()
+df["future_risk_score"] = risk_scaler.fit_transform(risk_values)
 
-X_tensor = torch.tensor(X)
+# Future threat label
+threshold = df["future_risk_score"].quantile(0.8)
+df["future_threat"] = (df["future_risk_score"] > threshold).astype(int)
 
-for epoch in range(100):
-    optimizer.zero_grad()
-    recon, mu, logvar = model(X_tensor)
-    loss = loss_function(recon, X_tensor, mu, logvar)
-    loss.backward()
-    optimizer.step()
+# =========================
+# STEP 5: COMBINED SCORE
+# =========================
+df["combined_score"] = (
+    0.6 * df["is_insider"] +
+    0.4 * df["future_risk_score"]
+)
 
-# -------- 5. VAE Anomaly Score --------
-with torch.no_grad():
-    recon, _, _ = model(X_tensor)
-    vae_errors = torch.mean((X_tensor - recon) ** 2, dim=1).numpy()
+# Risk levels
+def risk_label(x):
+    if x < 0.3:
+        return "LOW"
+    elif x < 0.6:
+        return "MEDIUM"
+    else:
+        return "HIGH"
 
-data["vae_score"] = vae_errors
+df["risk_level"] = df["combined_score"].apply(risk_label)
 
-# -------- 6. Combine Scores --------
-# normalize scores
-data["iso_norm"] = (data["iso_score"] - data["iso_score"].min()) / (data["iso_score"].max() - data["iso_score"].min())
-data["vae_norm"] = (data["vae_score"] - data["vae_score"].min()) / (data["vae_score"].max() - data["vae_score"].min())
+# =========================
+# STEP 6: SHAP EXPLANATION
+# =========================
+try:
+    # Use TreeExplainer (better for tree models)
+    explainer = shap.TreeExplainer(iso)
 
-# combined score
-data["combined_score"] = 0.5 * data["iso_norm"] + 0.5 * data["vae_norm"]
+    shap_values = explainer.shap_values(X_scaled)
 
-# -------- 7. Current Insider --------
-threshold = np.percentile(data["combined_score"], 80)
-data["current_insider"] = data["combined_score"] > threshold
+    # Convert SHAP values into DataFrame
+    shap_df = pd.DataFrame(
+        shap_values,
+        columns=[f"shap_{col}" for col in feature_cols]
+    )
 
-# -------- 8. Future Insider (trend) --------
-data["future_risk"] = data["combined_score"].rolling(2).mean().fillna(0)
-data["future_insider"] = data["future_risk"] > threshold
+    # Add SHAP values to main df
+    df = pd.concat([df.reset_index(drop=True), shap_df], axis=1)
 
-print(data)
+    print("✅ SHAP values computed successfully")
+
+except Exception as e:
+    print("⚠️ SHAP failed, skipping explanations:", e)
+
+# =========================
+# STEP 7: SAVE RESULTS
+# =========================
+df.to_csv("output/results.csv", index=False)
+
+print("✅ DONE: results saved to output/results.csv")
+
+# =========================
+# STEP 8: SHOW TOP RISKS
+# =========================
+print("\n🔥 Top Risky Users:")
+print(df.sort_values(by="combined_score", ascending=False).head(10))
