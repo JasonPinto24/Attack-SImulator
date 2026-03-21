@@ -5,10 +5,6 @@ import plotly.express as px
 st.set_page_config(page_title="Fraud Dashboard", layout="wide")
 
 # Load data
-@st.cache_data(show_spinner=False)
-def load_data(path):
-    return pd.read_csv(path)
-
 df = load_data("output/results.csv")
 
 st.title("💳 Fraud Detection Dashboard")
