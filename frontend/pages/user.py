@@ -6,7 +6,7 @@ st.set_page_config(page_title="User Profile", layout="wide")
 # Load data
 @st.cache_data
 def load_data():
-    return pd.read_csv("outputs/results.csv")
+    return pd.read_csv("output/results.csv")
 
 df = load_data()
 
