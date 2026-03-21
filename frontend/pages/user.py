@@ -4,11 +4,11 @@ import pandas as pd
 st.set_page_config(page_title="User Profile", layout="wide")
 
 # Load data
-@st.cache_data
-def load_data():
-    return pd.read_csv("outputs/results.csv")
+@st.cache_data(show_spinner=False)
+def load_data(path):
+    return pd.read_csv(path)
 
-df = load_data()
+df = load_data("output/results.csv")
 
 st.title("👤 User Profile Explorer")
 
