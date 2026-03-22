@@ -52,8 +52,8 @@ df["future_threat"] = (df["future_risk_score"] > threshold).astype(int)
 # STEP 5: COMBINED SCORE
 # =========================
 df["combined_score"] = (
-    0.6 * df["is_insider"] +
-    0.4 * df["future_risk_score"]
+    0.3 * df["is_insider"] +
+    0.7 * df["future_risk_score"]
 )
 
 # Risk levels
@@ -102,3 +102,5 @@ print("✅ DONE: results saved to output/results.csv")
 # =========================
 print("\n🔥 Top Risky Users:")
 print(df.sort_values(by="combined_score", ascending=False).head(10))
+
+print(df[["combined_score", "is_insider"]].corr())
