@@ -103,4 +103,3 @@ print("✅ DONE: results saved to output/results.csv")
 print("\n🔥 Top Risky Users:")
 print(df.sort_values(by="combined_score", ascending=False).head(10))
 
-print(df[["combined_score", "is_insider"]].corr())
